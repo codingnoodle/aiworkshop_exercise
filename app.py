@@ -335,28 +335,19 @@ class BiopharmaMARadar:
         start_date_str = start_date.strftime('%Y%m%d%H%M%S')
         end_date_str = end_date.strftime('%Y%m%d%H%M%S')
         
-        # Search for biotech/biopharma deals with more specific terms
-        biotech_queries = [
-            "biotech acquisition",
-            "pharmaceutical acquisition", 
-            "biopharma merger",
-            "drug company deal",
-            "pharma merger",
-            "biotech partnership"
-        ]
-        
+        # Use the user's search query
         all_articles = []
         
-        for search_query in biotech_queries:
-            result = self.gdelt_client.search_news(
-                query=search_query,
-                start_date=start_date_str,
-                end_date=end_date_str,
-                max_records=100
-            )
-            
-            if result['status'] == 'success':
-                all_articles.extend(result['articles'])
+        # Search with the user's query
+        result = self.gdelt_client.search_news(
+            query=query,
+            start_date=start_date_str,
+            end_date=end_date_str,
+            max_records=100
+        )
+        
+        if result['status'] == 'success':
+            all_articles.extend(result['articles'])
         
         # Parse articles and extract deal information
         parsed_deals = []
@@ -418,31 +409,31 @@ class BiopharmaMARadar:
                 
                 # Assign realistic sample sizes based on company or headline
                 if 'merck' in headline_lower or (acquirer and 'merck' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 10000  # $10B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 10000  # $10B
                 elif 'abbvie' in headline_lower or (acquirer and 'abbvie' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 5000   # $5B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 5000   # $5B
                 elif 'pfizer' in headline_lower or (acquirer and 'pfizer' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 8000   # $8B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 8000   # $8B
                 elif 'novartis' in headline_lower or (acquirer and 'novartis' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 3000   # $3B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 3000   # $3B
                 elif 'roche' in headline_lower or (acquirer and 'roche' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 2500   # $2.5B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 2500   # $2.5B
                 elif 'bristol' in headline_lower or (acquirer and 'bristol' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 1500   # $1.5B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 1500   # $1.5B
                 elif 'amgen' in headline_lower or (acquirer and 'amgen' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 2000   # $2B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 2000   # $2B
                 elif 'gilead' in headline_lower or (acquirer and 'gilead' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 1800   # $1.8B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 1800   # $1.8B
                 elif 'biogen' in headline_lower or (acquirer and 'biogen' in acquirer.lower()):
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = 1200   # $1.2B
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = 1200   # $1.2B
                 elif 'acquisition' in headline_lower or 'merger' in headline_lower:
                     # Random sample sizes for other deals
                     import random
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = random.uniform(500, 2000)
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = random.uniform(500, 2000)
                 else:
                     # Default size for other deals
                     import random
-                    self.deals_data.at[idx, 'deal_size_usd_millions'] = random.uniform(200, 1000)
+                    self.deals_data.loc[idx, 'deal_size_usd_millions'] = random.uniform(200, 1000)
     
     def create_kpi_cards(self) -> None:
         """Create KPI cards for the dashboard"""
@@ -669,6 +660,10 @@ def main():
     if 'radar_app' not in st.session_state:
         st.session_state.radar_app = BiopharmaMARadar()
     
+    # Initialize data fetched flag
+    if 'data_fetched' not in st.session_state:
+        st.session_state.data_fetched = False
+    
     radar_app = st.session_state.radar_app
     
     # Sidebar controls
@@ -678,7 +673,8 @@ def main():
     search_query = st.sidebar.text_input(
         "Search Query", 
         value="biotech acquisition",
-        help="Enter keywords to search for in news articles"
+        help="Enter keywords to search for in news articles",
+        key="search_query_input"
     )
     
     days_back = st.sidebar.slider(
@@ -686,40 +682,56 @@ def main():
         min_value=30, 
         max_value=365, 
         value=180,
-        help="Number of days to look back for news articles"
+        help="Number of days to look back for news articles",
+        key="days_back_input"
     )
+    
+    # Check if parameters have changed and clear data if so
+    if 'last_search_query' not in st.session_state:
+        st.session_state.last_search_query = search_query
+        st.session_state.last_days_back = days_back
+    
+    if (st.session_state.last_search_query != search_query or 
+        st.session_state.last_days_back != days_back):
+        # Parameters changed, clear existing data
+        radar_app.deals_data = pd.DataFrame()
+        st.session_state.data_fetched = False
+        st.session_state.last_search_query = search_query
+        st.session_state.last_days_back = days_back
+        # Force a rerun to update the UI immediately
+        st.rerun()
+    
+    # Show data status
+    if st.session_state.data_fetched and not radar_app.deals_data.empty:
+        st.sidebar.success(f"✅ Data loaded: {len(radar_app.deals_data)} deals")
+    else:
+        st.sidebar.info("ℹ️ No data loaded. Click 'Fetch Deals Data' to start.")
     
     # Fetch data button
     if st.sidebar.button("🔍 Fetch Deals Data", type="primary"):
         with st.spinner("Fetching deals data from GDELT API..."):
+            # Clear any existing data first
+            radar_app.deals_data = pd.DataFrame()
             deals_data = radar_app.fetch_deals_data(search_query, days_back)
             
             if not deals_data.empty:
                 st.success(f"Successfully fetched {len(deals_data)} deals!")
+                st.session_state.data_fetched = True
+                # Force a rerun to update the display
+                st.rerun()
             else:
                 st.warning("No deals found. Try adjusting your search parameters.")
+                st.session_state.data_fetched = False
     
-    # API Test Section
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🧪 API Test")
-    
-    if st.sidebar.button("Test GDELT API"):
-        with st.spinner("Testing GDELT API..."):
-            # Test with a simple query
-            test_result = radar_app.gdelt_client.search_news(
-                query="biotech acquisition",
-                start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d%H%M%S'),
-                end_date=datetime.now().strftime('%Y%m%d%H%M%S'),
-                max_records=10
-            )
-            
-            if test_result['status'] == 'success':
-                st.sidebar.success(f"API Test Successful! Found {len(test_result['articles'])} articles.")
-            else:
-                st.sidebar.error(f"API Test Failed: {test_result.get('error', 'Unknown error')}")
+    # Clear data button
+    if st.sidebar.button("🗑️ Clear Data"):
+        radar_app.deals_data = pd.DataFrame()
+        st.session_state.data_fetched = False
+        st.success("Data cleared!")
+        st.rerun()
     
     # Main content area
-    if not radar_app.deals_data.empty:
+    if st.session_state.data_fetched and not radar_app.deals_data.empty:
         # KPI Cards
         st.subheader("📊 Key Performance Indicators")
         radar_app.create_kpi_cards()
