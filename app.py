@@ -139,27 +139,45 @@ class DealExtractor:
     """Extract and parse deal information from news articles"""
     
     def __init__(self):
-        # Enhanced regex patterns for deal size extraction
+        # Enhanced regex patterns for deal size extraction (ordered by specificity)
         self.deal_size_patterns = [
-            # Standard formats
-            r'\$(\d+(?:\.\d+)?)\s*(billion|B|bn)',
-            r'\$(\d+(?:\.\d+)?)\s*(million|M|mn)',
-            r'\$(\d+(?:\.\d+)?)\s*(thousand|K|k)',
-            r'(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*(?:dollars?|USD)?',
-            r'(\d+(?:\.\d+)?)\s*(million|M|mn)\s*(?:dollars?|USD)?',
-            r'(\d+(?:\.\d+)?)\s*(thousand|K|k)\s*(?:dollars?|USD)?',
+            # Handle space-separated numbers (e.g., "$7 . 3 billion")
+            r'\$\s*(\d+)\s*\.\s*(\d+)\s*(billion|B|bn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'\$\s*(\d+)\s*\.\s*(\d+)\s*(million|M|mn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'(\d+)\s*\.\s*(\d+)\s*(billion|B|bn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'(\d+)\s*\.\s*(\d+)\s*(million|M|mn)\s*(?:deal|acquisition|purchase|buyout)',
             
-            # Additional formats
-            r'US\$(\d+(?:\.\d+)?)\s*(billion|B|bn)',
-            r'US\$(\d+(?:\.\d+)?)\s*(million|M|mn)',
-            r'(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*deal',
-            r'(\d+(?:\.\d+)?)\s*(million|M|mn)\s*deal',
+            # Handle "up to" with space-separated numbers
+            r'(?:up\s+to\s+)?\$\s*(\d+)\s*\.\s*(\d+)\s*(billion|B|bn)',
+            r'(?:up\s+to\s+)?\$\s*(\d+)\s*\.\s*(\d+)\s*(million|M|mn)',
+            
+            # Most specific patterns first - handle cases where $ and number might be separated
+            r'\$\s*(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'\$\s*(\d+(?:\.\d+)?)\s*(million|M|mn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*(?:deal|acquisition|purchase|buyout)',
+            r'(\d+(?:\.\d+)?)\s*(million|M|mn)\s*(?:deal|acquisition|purchase|buyout)',
+            
+            # Handle "up to" and "worth" patterns
+            r'(?:up\s+to\s+)?\$\s*(\d+(?:\.\d+)?)\s*(billion|B|bn)',
+            r'(?:up\s+to\s+)?\$\s*(\d+(?:\.\d+)?)\s*(million|M|mn)',
             r'worth\s*\$(\d+(?:\.\d+)?)\s*(billion|B|bn)',
             r'worth\s*\$(\d+(?:\.\d+)?)\s*(million|M|mn)',
             r'valued\s*at\s*\$(\d+(?:\.\d+)?)\s*(billion|B|bn)',
             r'valued\s*at\s*\$(\d+(?:\.\d+)?)\s*(million|M|mn)',
-            r'(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*acquisition',
-            r'(\d+(?:\.\d+)?)\s*(million|M|mn)\s*acquisition'
+            
+            # Standard formats with dollar signs (allow spaces)
+            r'\$\s*(\d+(?:\.\d+)?)\s*(billion|B|bn)',
+            r'\$\s*(\d+(?:\.\d+)?)\s*(million|M|mn)',
+            r'\$\s*(\d+(?:\.\d+)?)\s*(thousand|K|k)',
+            
+            # USD formats
+            r'US\$\s*(\d+(?:\.\d+)?)\s*(billion|B|bn)',
+            r'US\$\s*(\d+(?:\.\d+)?)\s*(million|M|mn)',
+            
+            # General formats (less specific, so last)
+            r'(\d+(?:\.\d+)?)\s*(billion|B|bn)\s*(?:dollars?|USD)?',
+            r'(\d+(?:\.\d+)?)\s*(million|M|mn)\s*(?:dollars?|USD)?',
+            r'(\d+(?:\.\d+)?)\s*(thousand|K|k)\s*(?:dollars?|USD)?'
         ]
         
         # Keywords for deal types
@@ -173,24 +191,46 @@ class DealExtractor:
     def extract_deal_size(self, text: str) -> Optional[float]:
         """Extract deal size from text and normalize to USD millions"""
         text_lower = text.lower()
+        all_matches = []
         
-        # Try all patterns
-        for pattern in self.deal_size_patterns:
-            match = re.search(pattern, text_lower, re.IGNORECASE)
-            if match:
+        # Collect all matches from all patterns
+        for i, pattern in enumerate(self.deal_size_patterns):
+            matches = re.finditer(pattern, text_lower, re.IGNORECASE)
+            for match in matches:
                 try:
-                    value = float(match.group(1))
-                    unit = match.group(2).lower()
+                    # Handle space-separated decimal numbers (e.g., "7 . 3")
+                    if len(match.groups()) >= 3 and match.group(2).isdigit():
+                        # This is a space-separated decimal like "7 . 3"
+                        whole_part = float(match.group(1))
+                        decimal_part = float(match.group(2))
+                        # Reconstruct the decimal number
+                        value = whole_part + (decimal_part / (10 ** len(match.group(2))))
+                        unit = match.group(3).lower()
+                    else:
+                        # Regular decimal number
+                        value = float(match.group(1))
+                        unit = match.group(2).lower()
                     
                     # Convert to millions
                     if unit in ['billion', 'b', 'bn']:
-                        return value * 1000
+                        result = value * 1000
+                        all_matches.append((result, match.group(0), f"Pattern {i+1}"))
                     elif unit in ['million', 'm', 'mn']:
-                        return value
+                        all_matches.append((value, match.group(0), f"Pattern {i+1}"))
                     elif unit in ['thousand', 'k']:
-                        return value / 1000
-                except (ValueError, IndexError):
+                        result = value / 1000
+                        all_matches.append((result, match.group(0), f"Pattern {i+1}"))
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Error parsing match '{match.group(0)}': {e}")
                     continue
+        
+        # If we found matches, return the largest one (most likely to be the main deal size)
+        if all_matches:
+            # Sort by deal size (descending) and return the largest
+            all_matches.sort(key=lambda x: x[0], reverse=True)
+            largest_match = all_matches[0]
+            logger.info(f"Selected largest deal size: '{largest_match[1]}' -> {largest_match[0]} million ({largest_match[2]})")
+            return largest_match[0]
         
         # Fallback: look for any number followed by billion/million
         fallback_patterns = [
@@ -206,12 +246,17 @@ class DealExtractor:
                 try:
                     value = float(match.group(1))
                     if 'billion' in pattern or 'b' in pattern or 'bn' in pattern:
-                        return value * 1000
+                        result = value * 1000
+                        logger.info(f"Fallback pattern matched: '{match.group(0)}' -> {value} billion = {result} million")
+                        return result
                     elif 'million' in pattern or 'm' in pattern or 'mn' in pattern:
+                        logger.info(f"Fallback pattern matched: '{match.group(0)}' -> {value} million = {value} million")
                         return value
-                except (ValueError, IndexError):
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Error parsing fallback match '{match.group(0)}': {e}")
                     continue
                     
+        logger.debug(f"No deal size found in text: {text[:100]}...")
         return None
     
     def extract_deal_type(self, text: str) -> str:
@@ -301,10 +346,23 @@ class DealExtractor:
         date = article.get('seendate', '')
         content = article.get('snippet', '')
         
+        # Combine text for extraction
+        full_text = headline + ' ' + content
+        
+        # Log the full text for debugging (only for Pfizer deals)
+        if 'pfizer' in full_text.lower() and 'metsera' in full_text.lower():
+            logger.info(f"DEBUG - Full text for Pfizer-Metsera: {full_text}")
+        
         # Extract deal information
-        deal_size = self.extract_deal_size(headline + ' ' + content)
-        deal_type = self.extract_deal_type(headline + ' ' + content)
-        acquirer, target = self.extract_companies(headline + ' ' + content)
+        deal_size = self.extract_deal_size(full_text)
+        deal_type = self.extract_deal_type(full_text)
+        acquirer, target = self.extract_companies(full_text)
+        
+        # Log extraction results for debugging
+        if deal_size:
+            logger.info(f"Extracted deal size {deal_size}M from: {headline[:50]}...")
+        else:
+            logger.debug(f"No deal size extracted from: {headline[:50]}...")
         
         return {
             'headline': headline,
@@ -362,8 +420,43 @@ class BiopharmaMARadar:
         # Convert to DataFrame
         if parsed_deals:
             self.deals_data = pd.DataFrame(parsed_deals)
-            # Remove duplicates based on URL
+            # Remove duplicates based on URL first
             self.deals_data = self.deals_data.drop_duplicates(subset=['url'])
+            
+            # Additional deduplication based on similar headlines and companies
+            # Group by acquirer and target, keep the one with the largest deal size
+            if not self.deals_data.empty:
+                # Create a key for grouping similar deals
+                self.deals_data['deal_key'] = self.deals_data.apply(
+                    lambda row: f"{row['acquirer']}_{row['target']}" if pd.notna(row['acquirer']) and pd.notna(row['target']) else row['headline'][:50], 
+                    axis=1
+                )
+                
+                # Handle NaN values in deal_size_usd_millions for deduplication
+                # Fill NaN values with 0 for comparison purposes
+                deal_sizes_for_comparison = self.deals_data['deal_size_usd_millions'].fillna(0)
+                
+                # Group by deal_key and keep the row with the largest deal size
+                # Use the filled values for comparison but keep original NaN values
+                max_indices = self.deals_data.groupby('deal_key').apply(
+                    lambda group: group['deal_size_usd_millions'].fillna(0).idxmax(),
+                    include_groups=False
+                )
+                
+                # Filter out any NaN indices that might still exist
+                valid_indices = max_indices.dropna()
+                
+                if len(valid_indices) > 0:
+                    deduplicated = self.deals_data.loc[valid_indices].copy()
+                    # Drop the temporary column
+                    deduplicated = deduplicated.drop('deal_key', axis=1)
+                    self.deals_data = deduplicated
+                    
+                    logger.info(f"After deduplication: {len(self.deals_data)} unique deals")
+                else:
+                    # If no valid indices, just drop the deal_key column
+                    self.deals_data = self.deals_data.drop('deal_key', axis=1)
+                    logger.info("No valid indices for deduplication, keeping all deals")
             # Convert date column and handle timezone
             self.deals_data['date'] = pd.to_datetime(self.deals_data['date'], errors='coerce')
             # Convert to naive datetime (remove timezone info)
@@ -391,7 +484,9 @@ class BiopharmaMARadar:
             self.deals_data = self.deals_data[self.deals_data['date'] >= cutoff_date]
             
             # Add sample deal sizes for demonstration if no sizes found
+            logger.info(f"Before adding sample data: {len(self.deals_data)} deals, {len(self.deals_data[pd.isna(self.deals_data['deal_size_usd_millions'])])} without size")
             self._add_sample_deal_sizes()
+            logger.info(f"After adding sample data: {len(self.deals_data)} deals, {len(self.deals_data[pd.isna(self.deals_data['deal_size_usd_millions'])])} without size")
             
             logger.info(f"Filtered to {len(self.deals_data)} recent biotech-related deals")
         else:
@@ -400,9 +495,17 @@ class BiopharmaMARadar:
         return self.deals_data
     
     def _add_sample_deal_sizes(self) -> None:
-        """Add sample deal sizes for demonstration purposes"""
-        # Add sample sizes for deals without size information
-        for idx, row in self.deals_data.iterrows():
+        """Add sample deal sizes only for deals where extraction truly failed"""
+        # Only add sample sizes for deals without size information
+        deals_without_size = self.deals_data[pd.isna(self.deals_data['deal_size_usd_millions'])]
+        
+        if len(deals_without_size) == 0:
+            return  # No need to add sample data
+        
+        logger.info(f"Adding sample deal sizes for {len(deals_without_size)} deals where extraction failed")
+        
+        for idx, row in deals_without_size.iterrows():
+            # Double-check that this deal doesn't have a size (shouldn't happen, but safety check)
             if pd.isna(row['deal_size_usd_millions']):
                 headline_lower = row['headline'].lower()
                 acquirer = row['acquirer']
@@ -564,6 +667,7 @@ class BiopharmaMARadar:
                     return pharma
             return 'Other'
         
+        deals_with_acquirer = deals_with_acquirer.copy()
         deals_with_acquirer['acquirer_category'] = deals_with_acquirer['acquirer'].apply(categorize_acquirer)
         
         # Count deals by category
@@ -622,6 +726,9 @@ class BiopharmaMARadar:
         
         # Format date
         display_data['date_display'] = display_data['date'].dt.strftime('%Y-%m-%d')
+        
+        # Sort by date (newest first)
+        display_data = display_data.sort_values('date', ascending=False)
         
         # Select columns for display
         columns_to_show = [
